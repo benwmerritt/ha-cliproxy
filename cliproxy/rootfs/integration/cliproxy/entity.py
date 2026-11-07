@@ -1,5 +1,3 @@
-"""Shared entity plumbing for CLIProxy accounts and providers."""
-
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable

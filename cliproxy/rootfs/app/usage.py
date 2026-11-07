@@ -1,7 +1,6 @@
-"""Reads CLIProxy's management API and reduces it to per-account usage."""
-
 from __future__ import annotations
 
+import json
 import re
 import socket
 from datetime import UTC, datetime
@@ -23,6 +22,9 @@ KIND_NAMES = {
     "primary": "Primary",
     "secondary": "Secondary",
 }
+SIDE_POOLS = {"additional", "code_review"}
+POOL_NAMES = {"code_review": "code review"}
+NOT_SLUG = re.compile(r"[^a-z0-9]+")
 PROVIDER_NAMES = {"claude": "Claude", "codex": "Codex", "meta": "Meta", "xai": "xAI", "kimi": "Kimi"}
 
 Status = dict[str, Any]
@@ -68,7 +70,7 @@ def open_session(url: str, connect_address: str | None) -> aiohttp.ClientSession
 
 async def fetch_status(session: aiohttp.ClientSession, url: str, management_key: str, now: datetime) -> Status:
     headers = {"Authorization": f"Bearer {management_key}"}
-    timeout = aiohttp.ClientTimeout(total=30)
+    timeout = aiohttp.ClientTimeout(total=20)
     base = url.rstrip("/")
     async with session.get(f"{base}/v0/management/auth-files", headers=headers, timeout=timeout) as response:
         response.raise_for_status()
@@ -118,15 +120,13 @@ def latest_readings(rows_by_account: dict[str, list[dict[str, Any]]]) -> dict[st
 
 def account_status(file: dict[str, Any], reading: dict[str, Any], now: datetime) -> Status:
     provider = file.get("provider") or "unknown"
-    limits = [limit_status(limit, reading) for limit in reading.get("limits") or []]
+    limits = [limit_status(limit, reading, now) for limit in reading.get("limits") or []]
     cooldown_until = quota_cooldown_until(file.get("cooldowns") or [], now)
     has_credits = bool(reading.get("credit_unlimited")) or (reading.get("credits") or 0) > 0
-    exhausted = [] if has_credits else [limit for limit in limits if limit["active"] and limit["percent"] >= 100]
+    full = [limit for limit in limits if limit["account_wide"] and limit["active"] and limit["percent"] >= 100]
+    exhausted = [] if has_credits else full
     out_of_usage = cooldown_until is not None or bool(exhausted)
-    upcoming = sorted(
-        (limit["resets_at"] for limit in limits if limit["resets_at"] and parse_time(limit["resets_at"]) > now),
-        key=parse_time,
-    )
+    upcoming = sorted((limit["resets_at"] for limit in limits if limit["resets_at"]), key=parse_time)
     back_at = cooldown_until or max(
         (limit["resets_at"] for limit in exhausted if limit["resets_at"]), key=parse_time, default=None
     )
@@ -137,8 +137,9 @@ def account_status(file: dict[str, Any], reading: dict[str, Any], now: datetime)
         "provider_name": provider_name(provider),
         "name": account_name(file),
         "status": file.get("status") or "unknown",
-        "status_message": file.get("status_message") or None,
+        "status_message": readable_message(file.get("status_message")),
         "out_of_usage": out_of_usage,
+        "using_credits": bool(full) and has_credits and not out_of_usage,
         "usage_back_at": back_at if out_of_usage else None,
         "next_reset": upcoming[0] if upcoming else None,
         "plan": reading.get("plan"),
@@ -149,32 +150,52 @@ def account_status(file: dict[str, Any], reading: dict[str, Any], now: datetime)
     }
 
 
-def limit_status(limit: dict[str, Any], reading: dict[str, Any]) -> Status:
+def readable_message(message: str | None) -> str | None:
+    if not message:
+        return None
+    try:
+        body = json.loads(message)
+    except ValueError:
+        return message
+    error = body.get("error") if isinstance(body, dict) else None
+    nested = error.get("message") if isinstance(error, dict) else error
+    return nested if isinstance(nested, str) and nested else message
+
+
+def limit_status(limit: dict[str, Any], reading: dict[str, Any], now: datetime) -> Status:
+    resets_at = utc(limit.get("resets_at"))
+    expired = resets_at is not None and parse_time(resets_at) <= now
     kind = limit.get("kind") or "limit"
+    group = limit.get("group") or ""
     model = limit.get("model") or None
-    minutes = (reading.get("window_minutes") or {}).get(kind)
-    name = WINDOW_NAMES.get(minutes) or KIND_NAMES.get(kind) or kind.replace("_", " ").capitalize()
+    pool = group if group in SIDE_POOLS else ""
+    window_key = ":".join(part for part in (pool, model if pool == "additional" else None, kind) if part)
+    minutes = (reading.get("window_minutes") or {}).get(window_key)
+    window = WINDOW_NAMES.get(minutes) or KIND_NAMES.get(kind) or kind.replace("_", " ").capitalize()
     return {
-        "key": f"{kind}_{model.lower()}" if model else kind,
-        "name": f"{name} {model}" if model else name,
+        "key": "_".join(slug(part) for part in (pool, kind, model) if part),
+        "name": " ".join(part for part in (window, model, POOL_NAMES.get(pool)) if part),
         "model": model,
-        "percent": float(limit.get("percent") or 0),
-        "severity": limit.get("severity"),
-        "resets_at": utc(limit.get("resets_at")),
-        "active": bool(limit.get("active")),
+        "account_wide": not model and not pool,
+        "percent": 0.0 if expired else float(limit.get("percent") or 0),
+        "severity": None if expired else limit.get("severity"),
+        "resets_at": None if expired else resets_at,
+        "active": not expired and bool(limit.get("active")),
     }
 
 
+def slug(text: str) -> str:
+    return NOT_SLUG.sub("_", text.lower()).strip("_")
+
+
 def quota_cooldown_until(cooldowns: list[dict[str, Any]], now: datetime) -> str | None:
-    until = [
-        cooldown["retry_at"]
+    retry_times = (
+        utc(cooldown.get("retry_at"))
         for cooldown in cooldowns
-        if cooldown.get("scope") == "credential"
-        and cooldown.get("reason") in QUOTA_COOLDOWN_REASONS
-        and cooldown.get("retry_at")
-        and parse_time(cooldown["retry_at"]) > now
-    ]
-    return utc(max(until, key=parse_time)) if until else None
+        if cooldown.get("scope") == "credential" and cooldown.get("reason") in QUOTA_COOLDOWN_REASONS
+    )
+    until = [retry_at for retry_at in retry_times if retry_at and parse_time(retry_at) > now]
+    return max(until, key=parse_time) if until else None
 
 
 def provider_status(accounts: list[Status]) -> list[Status]:
@@ -196,7 +217,12 @@ def provider_name(provider: str) -> str:
 
 
 def utc(value: str | None) -> str | None:
-    return parse_time(value).astimezone(UTC).isoformat() if value else None
+    if not value:
+        return None
+    try:
+        return parse_time(value).astimezone(UTC).isoformat()
+    except (TypeError, ValueError):
+        return None
 
 
 def parse_time(value: str) -> datetime:

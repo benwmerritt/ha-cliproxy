@@ -113,3 +113,62 @@ def test_integration_is_copied_once_and_again_after_it_changes(tmp_path, monkeyp
     (source / "manifest.json").write_text('{"version": "2"}')
     assert server.install_integration() is True
     assert (target / "manifest.json").read_text() == '{"version": "2"}'
+
+
+def test_an_empty_token_file_gets_a_new_token(tmp_path, monkeypatch):
+    token_file = tmp_path / "api-token"
+    token_file.write_text("")
+    monkeypatch.setattr(server, "TOKEN_FILE", token_file)
+
+    token = server.api_token()
+
+    assert len(token) > 20
+    assert token_file.read_text() == token
+    assert server.api_token() == token
+
+
+async def fake_supervisor(aiohttp_server, notify_status):
+    calls = []
+
+    async def notify(request):
+        calls.append("notify")
+        return web.json_response({}, status=notify_status)
+
+    async def discovery(request):
+        calls.append(("discovery", (await request.json())["service"]))
+        return web.json_response({"result": "ok"})
+
+    app = web.Application()
+    app.router.add_post(server.NOTIFY, notify)
+    app.router.add_post("/discovery", discovery)
+    return await aiohttp_server(app), calls
+
+
+def announce_into(tmp_path, monkeypatch, supervisor_url):
+    source = tmp_path / "source"
+    source.mkdir(exist_ok=True)
+    (source / "manifest.json").write_text("{}")
+    monkeypatch.setattr(server, "INTEGRATION_SOURCE", source)
+    monkeypatch.setattr(server, "INTEGRATION_TARGET", tmp_path / "custom_components" / "cliproxy")
+    monkeypatch.setattr(server, "RESTART_NOTICE_PENDING", tmp_path / "restart-notice-pending")
+    monkeypatch.setattr(server, "SUPERVISOR", supervisor_url)
+    monkeypatch.setenv("SUPERVISOR_TOKEN", "supervisor-token")
+    return server.announce({"token": "addon-token"})
+
+
+async def test_the_restart_notice_is_retried_until_core_takes_it(aiohttp_server, tmp_path, monkeypatch):
+    supervisor, calls = await fake_supervisor(aiohttp_server, notify_status=502)
+    await announce_into(tmp_path, monkeypatch, str(supervisor.make_url("")).rstrip("/"))
+    assert calls == ["notify", ("discovery", "cliproxy")]
+
+    calls.clear()
+    await announce_into(tmp_path, monkeypatch, str(supervisor.make_url("")).rstrip("/"))
+    assert calls == ["notify", ("discovery", "cliproxy")]
+    assert (tmp_path / "restart-notice-pending").exists()
+
+
+async def test_announcing_survives_an_unreachable_supervisor(tmp_path, monkeypatch):
+    await announce_into(tmp_path, monkeypatch, "http://127.0.0.1:9")
+
+    assert (tmp_path / "custom_components" / "cliproxy" / "manifest.json").exists()
+    assert (tmp_path / "restart-notice-pending").exists()

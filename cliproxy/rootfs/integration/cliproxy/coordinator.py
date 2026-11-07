@@ -1,5 +1,3 @@
-"""Polls the CLIProxy add-on and fires automation events on changes."""
-
 from __future__ import annotations
 
 import logging

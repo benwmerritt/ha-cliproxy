@@ -24,7 +24,7 @@ Each provider (Claude, Codex, ...) and each account is a device. The account dev
 
 | Entity | On | What it shows |
 | --- | --- | --- |
-| `binary_sensor.<account>_out_of_usage` | account | On while CLIProxy can't use the account: a quota cooldown, or an active limit at 100% with no credits left. Attribute `usage_back_at`. |
+| `binary_sensor.<account>_out_of_usage` | account | On while CLIProxy can't use the account: a quota cooldown, or an account-wide limit at 100% with no credits left. A full limit for one model, or for Codex code review, doesn't count. Attribute `usage_back_at`. |
 | `binary_sensor.<provider>_out_of_usage` | provider | On when every account of that provider is out of usage. |
 | `sensor.<account>_<limit>_usage` | account | Percent used of one limit, such as `weekly_usage` or `weekly_fable_usage`. Attribute `resets_at`. |
 | `sensor.<account>_next_reset` | account | When the next limit resets. A timestamp, so it works with a time trigger. |
@@ -33,7 +33,7 @@ Each provider (Claude, Codex, ...) and each account is a device. The account dev
 | `sensor.<account>_status` | account | CLIProxy's status for the account, with its message. Diagnostic. |
 | `sensor.<provider>_accounts_with_usage` | provider | How many of the provider's accounts have usage left. |
 
-The integration polls the add-on every minute, and the add-on reads CLIProxy at most every 20 seconds.
+The integration polls the add-on every minute, and the add-on reads CLIProxy at most every 20 seconds. Once a limit's reset time passes, it reads 0% until CLIProxy records a new reading. The panel shows a Codex account that has run through a limit but still has credits as **Using credits**.
 
 ## Automations
 
@@ -43,7 +43,7 @@ The integration fires three events. Each carries `device_id`, `scope` (`account`
 | --- | --- | --- |
 | `cliproxy_out_of_usage` | An account, or a whole provider, runs out | `usage_back_at` for accounts |
 | `cliproxy_usage_restored` | An account or provider that was out has usage again | |
-| `cliproxy_usage_reset` | An account's limit starts a new window | `limit`, `limit_name`, `previous_percent`, `percent`, `resets_at` |
+| `cliproxy_usage_reset` | An account's limit starts a new window: its reset time passes, or usage drops because the window restarted early | `limit`, `limit_name`, `previous_percent`, `percent`, `resets_at` |
 
 The same three show up as device triggers in the automation editor: **Ran out of usage**, **Usage came back** and **Usage limit reset**. Provider devices offer the first two.
 

@@ -1,5 +1,3 @@
-"""Usage, reset and status sensors for CLIProxy accounts and providers."""
-
 from __future__ import annotations
 
 from collections.abc import Iterable

@@ -1,5 +1,3 @@
-"""Constants for the CLIProxy integration."""
-
 from datetime import timedelta
 
 DOMAIN = "cliproxy"

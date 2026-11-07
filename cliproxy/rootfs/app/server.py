@@ -1,5 +1,3 @@
-"""CLIProxy add-on: the side-menu panel and the status API the integration reads."""
-
 from __future__ import annotations
 
 import asyncio
@@ -25,10 +23,17 @@ INGRESS_PEER = "172.30.32.2"
 CACHE_SECONDS = 20
 OPTIONS = Path("/data/options.json")
 TOKEN_FILE = Path("/data/api-token")
+RESTART_NOTICE_PENDING = Path("/data/restart-notice-pending")
 PANEL = Path(__file__).parent / "panel" / "index.html"
 INTEGRATION_SOURCE = Path("/integration/cliproxy")
 INTEGRATION_TARGET = Path("/homeassistant/custom_components/cliproxy")
 SUPERVISOR = "http://supervisor"
+NOTIFY = "/core/api/services/persistent_notification/create"
+RESTART_NOTICE = {
+    "notification_id": "cliproxy_integration_installed",
+    "title": "CLIProxy integration installed",
+    "message": "Restart Home Assistant to load the CLIProxy integration. It is then discovered under Settings → Devices & services.",
+}
 
 log = logging.getLogger("cliproxy")
 
@@ -52,10 +57,15 @@ class StatusCache:
 
 
 def api_token() -> str:
-    if not TOKEN_FILE.exists():
-        TOKEN_FILE.write_text(secrets.token_urlsafe(32))
-        TOKEN_FILE.chmod(0o600)
-    return TOKEN_FILE.read_text().strip()
+    token = TOKEN_FILE.read_text().strip() if TOKEN_FILE.exists() else ""
+    if token:
+        return token
+    token = secrets.token_urlsafe(32)
+    draft = TOKEN_FILE.with_suffix(".new")
+    draft.write_text(token)
+    draft.chmod(0o600)
+    draft.replace(TOKEN_FILE)
+    return token
 
 
 @web.middleware
@@ -78,6 +88,9 @@ async def status(request: web.Request) -> web.Response:
     except (aiohttp.ClientError, TimeoutError) as error:
         log.warning("CLIProxy request failed: %s", error)
         return web.json_response({"error": f"CLIProxy request failed: {error}"}, status=502)
+    except (KeyError, TypeError, ValueError) as error:
+        log.exception("CLIProxy returned data the add-on could not read")
+        return web.json_response({"error": f"CLIProxy returned data the add-on could not read: {error!r}"}, status=502)
 
 
 def install_integration() -> bool:
@@ -98,41 +111,35 @@ def tree_differs(source: Path, target: Path) -> bool:
     return any(tree_differs(source / name, target / name) for name in comparison.common_dirs)
 
 
-async def supervisor(session: aiohttp.ClientSession, method: str, path: str, body: dict) -> None:
+async def supervisor(session: aiohttp.ClientSession, path: str, body: dict) -> bool:
     headers = {"Authorization": f"Bearer {os.environ['SUPERVISOR_TOKEN']}"}
-    async with session.request(method, f"{SUPERVISOR}{path}", json=body, headers=headers) as response:
-        if response.status >= 400:
-            log.warning("Supervisor %s %s returned %s: %s", method, path, response.status, await response.text())
+    try:
+        async with session.post(f"{SUPERVISOR}{path}", json=body, headers=headers) as response:
+            if response.status < 400:
+                return True
+            log.warning("Supervisor %s returned %s: %s", path, response.status, await response.text())
+    except (aiohttp.ClientError, TimeoutError) as error:
+        log.warning("Could not reach the Supervisor at %s: %s", path, error)
+    return False
 
 
 async def announce(app: web.Application) -> None:
     async with aiohttp.ClientSession() as session:
         if install_integration():
             log.info("Installed the CLIProxy integration into custom_components")
-            await supervisor(
-                session,
-                "POST",
-                "/core/api/services/persistent_notification/create",
-                {
-                    "notification_id": "cliproxy_integration_installed",
-                    "title": "CLIProxy integration installed",
-                    "message": "Restart Home Assistant to load the CLIProxy integration. It is then discovered under Settings → Devices & services.",
-                },
-            )
-        await supervisor(
-            session,
-            "POST",
-            "/discovery",
-            {"service": "cliproxy", "config": {"url": f"http://{socket.gethostname()}:{PORT}", "token": app["token"]}},
-        )
+            RESTART_NOTICE_PENDING.touch()
+        if RESTART_NOTICE_PENDING.exists() and await supervisor(session, NOTIFY, RESTART_NOTICE):
+            RESTART_NOTICE_PENDING.unlink()
+        discovery = {"url": f"http://{socket.gethostname()}:{PORT}", "token": app["token"]}
+        await supervisor(session, "/discovery", {"service": "cliproxy", "config": discovery})
 
 
 async def on_startup(app: web.Application) -> None:
     app["cache"] = StatusCache(app["options"])
     try:
         await announce(app)
-    except (aiohttp.ClientError, OSError) as error:
-        log.warning("Could not install or announce the integration: %s", error)
+    except Exception:
+        log.exception("Could not install or announce the integration")
 
 
 async def on_cleanup(app: web.Application) -> None:

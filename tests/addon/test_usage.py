@@ -12,6 +12,7 @@ def test_quota_cooldown_marks_an_account_out_of_usage_until_it_ends():
     home = by_account(summarise(AUTH_FILES, HISTORY, NOW))["claude/home@example.com"]
 
     assert home["out_of_usage"] is True
+    assert home["using_credits"] is False
     assert home["usage_back_at"] == "2026-11-08T17:00:24.003867+00:00"
     assert home["next_reset"] == "2026-11-08T17:00:00+00:00"
 
@@ -87,9 +88,20 @@ def test_a_full_window_does_not_count_while_credits_pay_for_usage():
     }
     files = {"files": [AUTH_FILES["files"][2]]}
 
-    assert summarise(files, history, NOW)["accounts"][0]["out_of_usage"] is False
+    on_credits = summarise(files, history, NOW)["accounts"][0]
+    assert (on_credits["out_of_usage"], on_credits["using_credits"]) == (False, True)
     history["accounts"]["codex/pro@example.com"][0]["credits"] = 0
-    assert summarise(files, history, NOW)["accounts"][0]["out_of_usage"] is True
+    spent = summarise(files, history, NOW)["accounts"][0]
+    assert (spent["out_of_usage"], spent["using_credits"]) == (True, False)
+
+
+def test_a_json_error_from_the_provider_reads_as_its_message():
+    raw = '{"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account\'s rate limit."},"request_id":"req_1"}'
+    files = {"files": [{**AUTH_FILES["files"][1], "status_message": raw}]}
+
+    message = summarise(files, HISTORY, NOW)["accounts"][0]["status_message"]
+
+    assert message == "This request would exceed your account's rate limit."
 
 
 async def test_connect_address_reaches_the_proxy_while_keeping_its_hostname(aiohttp_server):
@@ -108,3 +120,82 @@ async def test_connect_address_reaches_the_proxy_while_keeping_its_hostname(aioh
         assert await response.json() == {"ok": True}
 
     assert seen["host"] == f"cliproxy.tailnet.invalid:{server.port}"
+
+
+def codex_reading(*limits, window_minutes=None):
+    return {
+        "accounts": {
+            "codex/pro@example.com": [
+                {
+                    "t": "2026-11-07T03:39:35Z",
+                    "window_minutes": window_minutes or {},
+                    "limits": list(limits),
+                    "plan": "pro",
+                }
+            ]
+        }
+    }
+
+
+CODEX_FILES = {"files": [AUTH_FILES["files"][2]]}
+
+
+def test_a_full_model_or_code_review_pool_leaves_the_account_usable():
+    history = codex_reading(
+        {"kind": "primary", "group": "window", "percent": 60, "resets_at": "2026-11-11T07:15:22Z"},
+        {
+            "kind": "primary",
+            "group": "additional",
+            "model": "GPT-5.3-Codex-Spark",
+            "percent": 100,
+            "resets_at": "2026-11-09T00:00:00Z",
+            "active": True,
+        },
+        {
+            "kind": "primary",
+            "group": "code_review",
+            "percent": 100,
+            "resets_at": "2026-11-09T00:00:00Z",
+            "active": True,
+        },
+        window_minutes={"primary": 10080, "additional:GPT-5.3-Codex-Spark:primary": 300, "code_review:primary": 10080},
+    )
+
+    codex = summarise(CODEX_FILES, history, NOW)["accounts"][0]
+
+    assert codex["out_of_usage"] is False
+    assert [(limit["key"], limit["name"]) for limit in codex["limits"]] == [
+        ("primary", "Weekly"),
+        ("additional_primary_gpt_5_3_codex_spark", "5-hour GPT-5.3-Codex-Spark"),
+        ("code_review_primary", "Weekly code review"),
+    ]
+
+
+def test_a_full_window_that_has_already_reset_no_longer_counts():
+    history = codex_reading(
+        {"kind": "primary", "group": "window", "percent": 100, "resets_at": "2026-11-07T03:00:00Z", "active": True}
+    )
+
+    codex = summarise(CODEX_FILES, history, NOW)["accounts"][0]
+
+    assert codex["out_of_usage"] is False
+    assert codex["usage_back_at"] is None
+    assert codex["limits"][0] | {"key": None, "name": None} == {
+        "key": None,
+        "name": None,
+        "model": None,
+        "account_wide": True,
+        "percent": 0.0,
+        "severity": None,
+        "resets_at": None,
+        "active": False,
+    }
+
+
+def test_a_timestamp_the_addon_cannot_read_is_left_blank():
+    history = codex_reading({"kind": "primary", "group": "window", "percent": 40, "resets_at": "next tuesday"})
+
+    codex = summarise(CODEX_FILES, history, NOW)["accounts"][0]
+
+    assert codex["limits"][0]["resets_at"] is None
+    assert codex["limits"][0]["percent"] == 40.0

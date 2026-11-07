@@ -10,7 +10,7 @@
     "step": {
       "hassio_confirm": {
         "title": "CLIProxy",
-        "description": "Add CLIProxy account usage from the CLIProxy add-on?"
+        "description": "Add CLIProxy account usage from the {addon} add-on?"
       }
     }
   },

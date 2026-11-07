@@ -14,6 +14,7 @@ from pytest_homeassistant_custom_component.common import (
     async_mock_service,
 )
 
+from custom_components.cliproxy import async_remove_config_entry_device
 from custom_components.cliproxy.const import DOMAIN
 from sample import AUTH_FILES, HISTORY, NOW
 from usage import summarise
@@ -88,6 +89,38 @@ async def test_addon_discovery_creates_the_entry(hass, aioclient_mock):
     assert result["type"] == "create_entry"
     assert result["data"] == {"url": ADDON, "token": "addon-token"}
     assert aioclient_mock.mock_calls[0][3]["Authorization"] == "Bearer addon-token"
+
+
+async def test_rediscovery_moves_the_entry_to_the_new_addon(hass, aioclient_mock):
+    entry = await set_up(hass, aioclient_mock, reading())
+    moved = "http://f9820869-cliproxy:8099"
+    aioclient_mock.get(f"{moved}/api/status", json=reading())
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": config_entries.SOURCE_HASSIO},
+        data=HassioServiceInfo(
+            config={"url": moved, "token": "new-token"}, name="CLIProxy", slug="f9820869_cliproxy", uuid="5678"
+        ),
+    )
+    await hass.async_block_till_done()
+
+    assert result["reason"] == "already_configured"
+    assert dict(entry.data) == {"url": moved, "token": "new-token"}
+    assert entry.state is config_entries.ConfigEntryState.LOADED
+
+
+async def test_only_devices_of_accounts_that_are_gone_can_be_removed(hass, aioclient_mock):
+    entry = await set_up(hass, aioclient_mock, reading())
+    devices = dr.async_get(hass)
+    home = devices.async_get_device_by_identifier((DOMAIN, HOME), entry.entry_id)
+    claude = devices.async_get_device_by_identifier((DOMAIN, "provider:claude"), entry.entry_id)
+    files = copy.deepcopy(AUTH_FILES)
+    files["files"] = [file for file in files["files"] if file["auth_index"] != HOME]
+    await refresh(hass, entry, aioclient_mock, reading(files=files))
+
+    assert await async_remove_config_entry_device(hass, entry, home) is True
+    assert await async_remove_config_entry_device(hass, entry, claude) is False
 
 
 async def test_adding_by_hand_points_to_the_addon(hass):

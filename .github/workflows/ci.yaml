@@ -26,5 +26,13 @@ jobs:
           path: ./cliproxy
       - name: Build the add-on image
         run: docker build --tag cliproxy-addon ./cliproxy
-      - name: Check the image's Python can import the add-on
-        run: docker run --rm --entrypoint python3 cliproxy-addon -c "import sys; sys.path.insert(0, '/app'); import server, usage"
+      - name: Start the add-on through its entrypoint and read its status API
+        run: |
+          mkdir data
+          echo '{"url": "http://127.0.0.1:9", "management_key": "test"}' > data/options.json
+          docker run --detach --name cliproxy --env SUPERVISOR_TOKEN=test --volume "$PWD/data:/data" --publish 8099:8099 cliproxy-addon
+          for attempt in $(seq 30); do curl --silent --output /dev/null http://127.0.0.1:8099/ && break; sleep 1; done
+          docker logs cliproxy
+          test "$(docker inspect --format '{{.State.Running}}' cliproxy)" = true
+          curl --silent --header "Authorization: Bearer $(sudo cat data/api-token)" http://127.0.0.1:8099/api/status | tee status.json
+          grep --quiet '"error": "CLIProxy request failed' status.json
