@@ -1,0 +1,14 @@
+{
+  "domain": "cliproxy",
+  "name": "CLIProxy",
+  "codeowners": [
+    "@benwmerritt"
+  ],
+  "config_flow": true,
+  "documentation": "https://github.com/benwmerritt/ha-cliproxy",
+  "integration_type": "hub",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/benwmerritt/ha-cliproxy/issues",
+  "requirements": [],
+  "version": "0.1.3"
+}

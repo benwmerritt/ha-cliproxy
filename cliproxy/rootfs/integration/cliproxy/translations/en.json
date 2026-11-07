@@ -1,0 +1,24 @@
+{
+  "config": {
+    "abort": {
+      "already_configured": "CLIProxy is already set up.",
+      "use_addon": "Install and start the CLIProxy add-on; it sets this integration up."
+    },
+    "error": {
+      "cannot_connect": "Could not reach CLIProxy through the add-on. Check the add-on's log and settings."
+    },
+    "step": {
+      "hassio_confirm": {
+        "title": "CLIProxy",
+        "description": "Add CLIProxy account usage from the {addon} add-on?"
+      }
+    }
+  },
+  "device_automation": {
+    "trigger_type": {
+      "out_of_usage": "Ran out of usage",
+      "usage_restored": "Usage came back",
+      "usage_reset": "Usage limit reset"
+    }
+  }
+}

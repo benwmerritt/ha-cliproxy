@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CLIProxy</title>
+<style>
+  :root {
+    --bg: #fafafa; --card: #ffffff; --text: #212121; --muted: #6f6f6f; --line: #e3e3e3;
+    --track: #ececec; --ok: #2e7d32; --warn: #ef6c00; --bad: #c62828; --accent: #03a9f4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111111; --card: #1c1c1c; --text: #e1e1e1; --muted: #9b9b9b; --line: #2c2c2c;
+      --track: #2c2c2c; --ok: #66bb6a; --warn: #ffa726; --bad: #ef5350; --accent: #29b6f6;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 Roboto, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 1040px; margin: 0 auto; padding: 16px; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; margin-bottom: 16px; }
+  h1 { font-size: 22px; font-weight: 500; margin: 0; }
+  .updated { color: var(--muted); }
+  .links { margin-left: auto; display: flex; gap: 12px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .error { background: var(--card); border-left: 4px solid var(--bad); padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; }
+  section { margin-bottom: 24px; }
+  h2 { font-size: 16px; font-weight: 500; margin: 0 0 8px; display: flex; gap: 8px; align-items: baseline; }
+  h2 .summary { font-size: 13px; color: var(--muted); font-weight: 400; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .name { font-weight: 500; overflow-wrap: anywhere; }
+  .chip { display: inline-block; margin-top: 6px; font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid currentColor; }
+  .chip.ok { color: var(--ok); } .chip.bad { color: var(--bad); } .chip.warn { color: var(--warn); }
+  .meta { color: var(--muted); font-size: 13px; margin-top: 6px; overflow-wrap: anywhere; }
+  .limit { margin-top: 12px; }
+  .row { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; }
+  .row .when { color: var(--muted); }
+  .bar { height: 6px; background: var(--track); border-radius: 3px; margin-top: 4px; overflow: hidden; }
+  .bar span { display: block; height: 100%; border-radius: 3px; background: var(--ok); }
+  .bar span.warn { background: var(--warn); } .bar span.bad { background: var(--bad); }
+  .bar span.credits { background: var(--accent); }
+  .empty { color: var(--muted); font-size: 13px; margin-top: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>CLIProxy</h1>
+    <span class="updated" id="updated">Loading…</span>
+    <span class="links" id="links"></span>
+  </header>
+  <div id="error" class="error" hidden></div>
+  <div id="providers"></div>
+</main>
+<script>
+  const REFRESH_MS = 30000;
+
+  function el(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text != null) node.textContent = text;
+    return node;
+  }
+
+  function relative(iso) {
+    const ms = new Date(iso) - Date.now();
+    const minutes = Math.round(Math.abs(ms) / 60000);
+    const days = Math.floor(minutes / 1440), hours = Math.floor((minutes % 1440) / 60), mins = minutes % 60;
+    const span = days ? `${days}d ${hours}h` : hours ? `${hours}h ${mins}m` : `${mins}m`;
+    return ms >= 0 ? `in ${span}` : `${span} ago`;
+  }
+
+  function clock(iso) {
+    return new Date(iso).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
+  }
+
+  function level(percent) {
+    return percent >= 100 ? "bad" : percent >= 80 ? "warn" : "";
+  }
+
+  function chip(account) {
+    if (account.out_of_usage) {
+      const until = account.usage_back_at ? ` until ${clock(account.usage_back_at)}` : "";
+      return el("span", "chip bad", `Out of usage${until}`);
+    }
+    if (account.using_credits) return el("span", "chip warn", "Using credits");
+    if (account.status === "error") return el("span", "chip warn", "Error");
+    return el("span", "chip ok", "Has usage");
+  }
+
+  function accountCard(account) {
+    const card = el("div", "card");
+    card.append(el("div", "name", account.name), chip(account));
+
+    const meta = [];
+    if (account.plan) meta.push(account.plan[0].toUpperCase() + account.plan.slice(1));
+    if (account.credits != null) meta.push(`${Math.round(account.credits).toLocaleString()} credits`);
+    if (account.banked_resets) meta.push(`${account.banked_resets} banked reset${account.banked_resets === 1 ? "" : "s"}`);
+    if (account.status_message && !account.out_of_usage) meta.push(account.status_message);
+    if (meta.length) card.append(el("div", "meta", meta.join(" · ")));
+
+    for (const limit of account.limits) {
+      const block = el("div", "limit");
+      const row = el("div", "row");
+      row.append(el("span", null, `${limit.name} · ${Math.round(limit.percent)}%`));
+      if (limit.resets_at) row.append(el("span", "when", `resets ${relative(limit.resets_at)}`));
+      const bar = el("div", "bar");
+      const fill = el("span", account.using_credits && limit.percent >= 100 ? "credits" : level(limit.percent));
+      fill.style.width = `${Math.min(100, Math.max(0, limit.percent))}%`;
+      bar.append(fill);
+      block.append(row, bar);
+      card.append(block);
+    }
+    if (!account.limits.length) card.append(el("div", "empty", "No usage limits reported."));
+    return card;
+  }
+
+  function render(status) {
+    document.getElementById("updated").textContent = `Updated ${new Date(status.fetched_at).toLocaleTimeString()}`;
+    const links = document.getElementById("links");
+    links.replaceChildren();
+    for (const [label, path] of [["Dashboard", "/management.html"], ["Quota history", "/quota.html"]]) {
+      const link = el("a", null, label);
+      link.href = status.proxy_url + path;
+      link.target = "_blank";
+      link.rel = "noopener";
+      links.append(link);
+    }
+
+    const container = document.getElementById("providers");
+    container.replaceChildren();
+    for (const provider of status.providers) {
+      const section = el("section");
+      const heading = el("h2", null, provider.name);
+      heading.append(el("span", "summary", `${provider.with_usage} of ${provider.accounts} with usage`));
+      const grid = el("div", "grid");
+      for (const account of status.accounts.filter((a) => a.provider === provider.provider)) grid.append(accountCard(account));
+      section.append(heading, grid);
+      container.append(section);
+    }
+  }
+
+  async function load() {
+    const error = document.getElementById("error");
+    try {
+      const response = await fetch("api/status", { cache: "no-store" });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+      error.hidden = true;
+      render(body);
+    } catch (problem) {
+      error.textContent = `Could not reach CLIProxy: ${problem.message}`;
+      error.hidden = false;
+    }
+  }
+
+  load();
+  setInterval(load, REFRESH_MS);
+</script>
+</body>
+</html>

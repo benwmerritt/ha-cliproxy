@@ -1,0 +1,10 @@
+configuration:
+  url:
+    name: CLIProxy URL
+    description: The proxy's base URL, such as https://cliproxy.example.ts.net.
+  connect_address:
+    name: Connect address
+    description: Optional IP address to connect to instead of looking the URL's hostname up. Use the proxy's tailnet IP when Home Assistant cannot resolve *.ts.net names. TLS still uses the hostname.
+  management_key:
+    name: Management key
+    description: CLIProxy's management key (remote-management secret).
