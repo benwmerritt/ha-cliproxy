@@ -127,9 +127,8 @@ def account_status(file: dict[str, Any], reading: dict[str, Any], now: datetime)
     exhausted = [] if has_credits else full
     out_of_usage = cooldown_until is not None or bool(exhausted)
     upcoming = sorted((limit["resets_at"] for limit in limits if limit["resets_at"]), key=parse_time)
-    back_at = cooldown_until or max(
-        (limit["resets_at"] for limit in exhausted if limit["resets_at"]), key=parse_time, default=None
-    )
+    blocked_until = [cooldown_until, *(limit["resets_at"] for limit in exhausted)]
+    back_at = max((deadline for deadline in blocked_until if deadline), key=parse_time, default=None)
     return {
         "id": file.get("auth_index") or account_key(file),
         "account": account_key(file),

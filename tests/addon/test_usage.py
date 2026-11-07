@@ -199,3 +199,21 @@ def test_a_timestamp_the_addon_cannot_read_is_left_blank():
 
     assert codex["limits"][0]["resets_at"] is None
     assert codex["limits"][0]["percent"] == 40.0
+
+
+def test_usage_is_back_only_when_both_the_cooldown_and_the_full_window_have_ended():
+    history = codex_reading(
+        {"kind": "primary", "group": "window", "percent": 100, "resets_at": "2026-11-10T00:00:00Z", "active": True}
+    )
+    files = {
+        "files": [
+            {
+                **CODEX_FILES["files"][0],
+                "cooldowns": [{"scope": "credential", "reason": "quota", "retry_at": "2026-11-07T05:00:00Z"}],
+            }
+        ]
+    }
+
+    codex = summarise(files, history, NOW)["accounts"][0]
+
+    assert codex["usage_back_at"] == "2026-11-10T00:00:00+00:00"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from functools import partial
 from typing import Any
 
 from homeassistant.core import callback
@@ -49,7 +50,9 @@ def add_entities_as_they_appear(
     @callback
     def add_new() -> None:
         new = [entity for entity in build(coordinator.data) if entity.unique_id not in known]
-        known.update(entity.unique_id for entity in new)
+        for entity in new:
+            known.add(entity.unique_id)
+            entity.async_on_remove(partial(known.discard, entity.unique_id))
         if new:
             async_add_entities(new)
 

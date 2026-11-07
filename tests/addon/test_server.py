@@ -1,3 +1,5 @@
+import asyncio
+
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
@@ -127,12 +129,13 @@ def test_an_empty_token_file_gets_a_new_token(tmp_path, monkeypatch):
     assert server.api_token() == token
 
 
-async def fake_supervisor(aiohttp_server, notify_status):
+async def fake_supervisor(aiohttp_server, notify_statuses):
     calls = []
+    statuses = iter(notify_statuses)
 
     async def notify(request):
         calls.append("notify")
-        return web.json_response({}, status=notify_status)
+        return web.json_response({}, status=next(statuses))
 
     async def discovery(request):
         calls.append(("discovery", (await request.json())["service"]))
@@ -144,7 +147,7 @@ async def fake_supervisor(aiohttp_server, notify_status):
     return await aiohttp_server(app), calls
 
 
-def announce_into(tmp_path, monkeypatch, supervisor_url):
+def addon_paths(tmp_path, monkeypatch, supervisor_url):
     source = tmp_path / "source"
     source.mkdir(exist_ok=True)
     (source / "manifest.json").write_text("{}")
@@ -152,23 +155,30 @@ def announce_into(tmp_path, monkeypatch, supervisor_url):
     monkeypatch.setattr(server, "INTEGRATION_TARGET", tmp_path / "custom_components" / "cliproxy")
     monkeypatch.setattr(server, "RESTART_NOTICE_PENDING", tmp_path / "restart-notice-pending")
     monkeypatch.setattr(server, "SUPERVISOR", supervisor_url)
+    monkeypatch.setattr(server, "ANNOUNCE_RETRY_SECONDS", 0)
     monkeypatch.setenv("SUPERVISOR_TOKEN", "supervisor-token")
-    return server.announce({"token": "addon-token"})
+    return {"options": {"url": "https://proxy.example", "management_key": "key"}, "token": "addon-token"}
 
 
 async def test_the_restart_notice_is_retried_until_core_takes_it(aiohttp_server, tmp_path, monkeypatch):
-    supervisor, calls = await fake_supervisor(aiohttp_server, notify_status=502)
-    await announce_into(tmp_path, monkeypatch, str(supervisor.make_url("")).rstrip("/"))
-    assert calls == ["notify", ("discovery", "cliproxy")]
+    supervisor, calls = await fake_supervisor(aiohttp_server, notify_statuses=[502, 200])
+    app = addon_paths(tmp_path, monkeypatch, str(supervisor.make_url("")).rstrip("/"))
 
-    calls.clear()
-    await announce_into(tmp_path, monkeypatch, str(supervisor.make_url("")).rstrip("/"))
-    assert calls == ["notify", ("discovery", "cliproxy")]
-    assert (tmp_path / "restart-notice-pending").exists()
-
-
-async def test_announcing_survives_an_unreachable_supervisor(tmp_path, monkeypatch):
-    await announce_into(tmp_path, monkeypatch, "http://127.0.0.1:9")
+    await server.on_startup(app)
+    await asyncio.wait_for(app["announcer"], timeout=5)
+    await app["cache"].session.close()
 
     assert (tmp_path / "custom_components" / "cliproxy" / "manifest.json").exists()
+    assert calls == ["notify", ("discovery", "cliproxy"), "notify"]
+    assert not (tmp_path / "restart-notice-pending").exists()
+
+
+async def test_the_addon_keeps_announcing_while_the_supervisor_is_unreachable(tmp_path, monkeypatch):
+    app = addon_paths(tmp_path, monkeypatch, "http://127.0.0.1:9")
+
+    await server.on_startup(app)
+    await asyncio.sleep(0.2)
+
+    assert not app["announcer"].done()
     assert (tmp_path / "restart-notice-pending").exists()
+    await server.on_cleanup(app)

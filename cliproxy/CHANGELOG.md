@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.3
+
+- Usage-back time is the later of a quota cooldown and a full window's reset.
+- The add-on keeps retrying discovery and the restart notice while Supervisor is unreachable.
+- An account whose device was deleted gets its entities back when it returns.
+
 ## 0.1.2
 
 - Only account-wide limits put an account out of usage. A full model or Codex code-review limit no longer does.

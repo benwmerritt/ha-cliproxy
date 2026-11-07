@@ -21,6 +21,7 @@ from usage import fetch_status, open_session
 PORT = 8099
 INGRESS_PEER = "172.30.32.2"
 CACHE_SECONDS = 20
+ANNOUNCE_RETRY_SECONDS = 60
 OPTIONS = Path("/data/options.json")
 TOKEN_FILE = Path("/data/api-token")
 RESTART_NOTICE_PENDING = Path("/data/restart-notice-pending")
@@ -124,25 +125,36 @@ async def supervisor(session: aiohttp.ClientSession, path: str, body: dict) -> b
 
 
 async def announce(app: web.Application) -> None:
+    discovery = {"url": f"http://{socket.gethostname()}:{PORT}", "token": app["token"]}
+    discovered = False
     async with aiohttp.ClientSession() as session:
-        if install_integration():
-            log.info("Installed the CLIProxy integration into custom_components")
-            RESTART_NOTICE_PENDING.touch()
-        if RESTART_NOTICE_PENDING.exists() and await supervisor(session, NOTIFY, RESTART_NOTICE):
-            RESTART_NOTICE_PENDING.unlink()
-        discovery = {"url": f"http://{socket.gethostname()}:{PORT}", "token": app["token"]}
-        await supervisor(session, "/discovery", {"service": "cliproxy", "config": discovery})
+        while True:
+            try:
+                if RESTART_NOTICE_PENDING.exists() and await supervisor(session, NOTIFY, RESTART_NOTICE):
+                    RESTART_NOTICE_PENDING.unlink()
+                discovered = discovered or await supervisor(
+                    session, "/discovery", {"service": "cliproxy", "config": discovery}
+                )
+            except Exception:
+                log.exception("Could not announce the integration")
+            if discovered and not RESTART_NOTICE_PENDING.exists():
+                return
+            await asyncio.sleep(ANNOUNCE_RETRY_SECONDS)
 
 
 async def on_startup(app: web.Application) -> None:
     app["cache"] = StatusCache(app["options"])
     try:
-        await announce(app)
-    except Exception:
-        log.exception("Could not install or announce the integration")
+        if install_integration():
+            log.info("Installed the CLIProxy integration into custom_components")
+            RESTART_NOTICE_PENDING.touch()
+    except OSError:
+        log.exception("Could not install the integration")
+    app["announcer"] = asyncio.create_task(announce(app))
 
 
 async def on_cleanup(app: web.Application) -> None:
+    app["announcer"].cancel()
     await app["cache"].session.close()
 
 

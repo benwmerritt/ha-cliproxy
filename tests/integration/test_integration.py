@@ -123,6 +123,21 @@ async def test_only_devices_of_accounts_that_are_gone_can_be_removed(hass, aiocl
     assert await async_remove_config_entry_device(hass, entry, claude) is False
 
 
+async def test_an_account_whose_device_was_removed_comes_back_when_it_returns(hass, aioclient_mock):
+    entry = await set_up(hass, aioclient_mock, reading())
+    devices = dr.async_get(hass)
+    files = copy.deepcopy(AUTH_FILES)
+    files["files"] = [file for file in files["files"] if file["auth_index"] != HOME]
+    await refresh(hass, entry, aioclient_mock, reading(files=files))
+    devices.async_remove_device(devices.async_get_device_by_identifier((DOMAIN, HOME), entry.entry_id).id)
+    await hass.async_block_till_done()
+    assert hass.states.get("binary_sensor.claude_home_example_com_out_of_usage") is None
+
+    await refresh(hass, entry, aioclient_mock, reading())
+
+    assert hass.states.get("binary_sensor.claude_home_example_com_out_of_usage").state == "on"
+
+
 async def test_adding_by_hand_points_to_the_addon(hass):
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
 
