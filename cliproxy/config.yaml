@@ -1,5 +1,5 @@
 name: CLIProxy
-version: "0.1.0"
+version: "0.1.1"
 slug: cliproxy
 description: CLIProxy account usage in the sidebar, and the integration that turns it into sensors and automation triggers
 url: https://github.com/benwmerritt/ha-cliproxy

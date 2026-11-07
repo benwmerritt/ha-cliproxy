@@ -6,7 +6,7 @@ RUN apk add --no-cache python3 py3-aiohttp
 COPY rootfs /
 
 WORKDIR /app
-CMD ["python3", "-u", "/app/server.py"]
+ENTRYPOINT ["python3", "-u", "/app/server.py"]
 
 LABEL \
     org.opencontainers.image.title="Home Assistant add-on: CLIProxy" \
